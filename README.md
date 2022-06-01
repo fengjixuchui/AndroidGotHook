@@ -1,7 +1,9 @@
 ## Simple Android ARM&ARM64 GOT Hook
 基于链接视图和执行视图，解析ELF，查找导入函数偏移值，替换函数地址。
 
-详见：[简易Android ARM&ARM64 GOT Hook (一)](https://blog.xhyeax.com/2021/08/23/android-arm-got-hook/)
+详见：
+
+[简易Android ARM&ARM64 GOT Hook (一)](https://blog.xhyeax.com/2021/08/23/android-arm-got-hook/)
 
 [简易Android ARM&ARM64 GOT Hook (二)](https://blog.xhyeax.com/2021/08/30/android-arm-plt-hook/)
 
@@ -21,7 +23,7 @@
 
 通过配置`CMakeLists.txt`将`libinject.so`作为动态库链接。
 
-在`native-lib.cpp`的`JNI_OnLoad`中调用`hackBySegment`替换`gitpid`函数。
+在`nativelib.cpp`的`JNI_OnLoad`中调用`hackBySegment`替换`getpid`函数。
 
 Java层调用`stringFromJNI`函数通过JNI获取pid并显示。
 
@@ -50,7 +52,7 @@ Java层调用`stringFromJNI`函数通过JNI获取pid并显示。
 ## 参考
 [android中基于plt/got的hook实现原理](https://blog.csdn.net/byhook/article/details/103500524)
 
-[聊聊Linux动态链接中的PLT和GOT(2)——延迟重定位]([https://linyt.blog.csdn.net/article/details/51636753])
+[聊聊Linux动态链接中的PLT和GOT(2)——延迟重定位](https://linyt.blog.csdn.net/article/details/51636753)
 
 [constructor属性函数在动态库加载中的执行顺序](https://zhuanlan.zhihu.com/p/108274829)
 
