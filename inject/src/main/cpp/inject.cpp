@@ -9,40 +9,41 @@
 #include "gotutil.h"
 
 #if defined(__LP64__)
-#define MODULE_PATH "/data/local/tmp/victim-patch-arm64"
+#define MODULE_NAME "victim-patch-arm64"
 #else
-#define MODULE_PATH "/data/local/tmp/victim-patch-arm"
+#define MODULE_NAME "victim-patch-arm"
 #endif
 
+typedef int (*getpid_fun)();
+
 // 原方法的备份
-int (*getpidOri)();
+getpid_fun getpidOri;
 
 // 替换方法
 int getpidReplace() {
     LOGE("before hook getpid\n");
     //调用原方法
-    int pid = (int) getpidOri();
+    int pid = getpidOri();
     LOGE("after hook getpid: %d\n", pid);
     return 233333;
 }
 
 void hack() {
-    //    uintptr_t ori = hackBySection(MODULE_PATH, "libc.so", "getpid",
-//                                  (uintptr_t) getpidReplace);
-    uintptr_t ori = hackBySegment(MODULE_PATH, "libc.so", "getpid",
+    uintptr_t ori = hackGOT(MODULE_NAME, "libc.so", "getpid",
                                   (uintptr_t) getpidReplace);
-    getpidOri = (int (*)()) (ori);
+    getpidOri = (getpid_fun) ori;
 }
 
 //so加载时由linker调用
 void __attribute__((constructor)) init() {
     LOGE("call from constructor\n");
     hack();
+    LOGE("constructor finish.\n");
 }
 
 // JNI LoadNativeLibrary中调用
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
-    if (NULL == vm) return JNI_ERR;
+    if (nullptr == vm) return JNI_ERR;
     LOGE("call from JNI_OnLoad\n");
     hack();
     return JNI_VERSION_1_6;

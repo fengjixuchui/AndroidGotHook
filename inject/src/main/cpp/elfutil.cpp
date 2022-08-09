@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <cinttypes>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <android/log.h>
@@ -13,21 +14,28 @@
 #include "elfutil.h"
 #include "mylog.h"
 
+void getFullPath(const char *src, char *dest) {
+    while (*src != '/') {
+        *src++;
+    }
+    strncpy(dest, src, strlen(src) - 1);
+}
 
-uintptr_t getModuleBase(const char *modulePath) {
+uintptr_t getModuleBase(const char *module_name, char *moduleFullPath) {
     uintptr_t addr = 0;
     char buff[256] = "\n";
 
     FILE *fp = fopen("/proc/self/maps", "r");
     while (fgets(buff, sizeof(buff), fp)) {
-        if (strstr(buff, "r-xp") && strstr(buff, modulePath) &&
-            sscanf(buff, "%lx", &addr) == 1) {
-            LOGE("[%s] moduleBase: %lX\n", modulePath, addr);
+        if (strstr(buff, "r-xp") && strstr(buff, module_name) &&
+            sscanf(buff, "%" SCNxPTR, &addr) == 1) {
+            getFullPath(buff, moduleFullPath);
+            LOGE("[%s] moduleBase: %" SCNxPTR, moduleFullPath, addr);
             return addr;
         }
     }
 //    LOGE("buff: %s", buff);
-    LOGE("[%s] moduleBase not found!\n", modulePath);
+    LOGE("[%s] moduleBase not found!\n", module_name);
     fclose(fp);
     return 0;
 }
@@ -36,6 +44,10 @@ uintptr_t getModuleBase(const char *modulePath) {
 int getGOTOffsetAndSize(const char *modulePath, int &GOTSize) {
     int GOTOffset = 0;
     FILE *fp = fopen(modulePath, "r");
+    if (!fp) {
+        LOGE("[%s] open failed!", modulePath);
+        return 0;
+    }
     ELFW(Ehdr) elf_header;
     ELFW(Shdr) elf_section_header;
     memset(&elf_header, 0, sizeof(elf_header));
@@ -43,7 +55,7 @@ int getGOTOffsetAndSize(const char *modulePath, int &GOTSize) {
     // 解析elf_header
     fseek(fp, 0, SEEK_SET);
     fread(&elf_header, sizeof(elf_header), 1, fp);
-//    LOGE("elf_header e_shoff: %lX, e_shstrndx: %d", elf_header.e_shoff, elf_header.e_shstrndx);
+//    LOGE("elf_header e_shoff: %" SCNxPTR ", e_shstrndx: %d", elf_header.e_shoff, elf_header.e_shstrndx);
 //    LOGE("elf_header e_shnum: %d", elf_header.e_shnum);
     // 获取字符串表在section header中的偏移
     fseek(fp, elf_header.e_shoff + elf_header.e_shstrndx * elf_header.e_shentsize, SEEK_SET);
@@ -82,8 +94,9 @@ static uint32_t elf_sysv_hash(const uint8_t *name) {
 }
 
 // 解析Segment
-uintptr_t getSymAddrDynamic(const char *modulePath, const char *symName) {
-    uintptr_t moduleBase = getModuleBase(modulePath);
+int getSymAddrDynamic(const char *module_name, const char *symName, uintptr_t *addrArray) {
+    char moduleFullPath[256] = {0};
+    uintptr_t moduleBase = getModuleBase(module_name, moduleFullPath);
     if (moduleBase == 0) {
         return 0;
     }
@@ -93,7 +106,7 @@ uintptr_t getSymAddrDynamic(const char *modulePath, const char *symName) {
     memset(&elf_program_header, 0, sizeof(elf_program_header));
     // 解析elf_header
     memcpy(&elf_header, (const void *) moduleBase, sizeof(elf_header));
-//    LOGE("elf_header e_phoff: %lX, e_phentsize: %d", elf_header.e_phoff, elf_header.e_phentsize);
+//    LOGE("elf_header e_phoff: %" SCNxPTR ", e_phentsize: %d", elf_header.e_phoff, elf_header.e_phentsize);
 //    LOGE("elf_header e_phnum: %d", elf_header.e_phnum);
     // 遍历program header table, 查找.dynamic
     int DYNOffset = 0;
@@ -113,13 +126,16 @@ uintptr_t getSymAddrDynamic(const char *modulePath, const char *symName) {
         return 0;
     }
     uintptr_t DYNBase = moduleBase + DYNOffset;
-    LOGE("DYNOffset: %lX DYNBase: %lX DYNSize: %lX", DYNOffset, DYNBase, DYNSize);
+//    LOGE("DYNOffset: %" SCNxPTR " DYNSize: %" SCNxPTR "", DYNOffset, DYNSize);
 
+    int addrArraySize = 0;
     // 保存各表
     ELFW(Sym) *dynsym;
     const char *dynstr;
     ELFW(Rel) *rel_dyn;
     ELFW(Rel) *rel_plt;
+    ELFW(Rela) *rela_dyn;
+    ELFW(Rela) *rela_plt;
     int rel_dyn_cnt, rel_plt_cnt;
     //.hash
     const uint32_t *buckets;
@@ -132,18 +148,32 @@ uintptr_t getSymAddrDynamic(const char *modulePath, const char *symName) {
     for (int i = 0; i < DYNSize / dyn_entsize; ++i) {
         memcpy(&dyn, (const void *) (DYNBase + i * dyn_entsize), dyn_entsize);
         switch (dyn.d_tag) {
-            // .rel.plt
+            // .rel.plt / .rela.plt
             case DT_JMPREL:
+#if defined(__LP64__)
+                rela_plt = (ELFW(Rela) *) (moduleBase + dyn.d_un.d_ptr);
+#else
                 rel_plt = (ELFW(Rel) *) (moduleBase + dyn.d_un.d_ptr);
+#endif
                 break;
             case DT_PLTRELSZ:
+#if defined(__LP64__)
+                rel_plt_cnt = dyn.d_un.d_val / sizeof(ELFW(Rela));
+#else
                 rel_plt_cnt = dyn.d_un.d_val / sizeof(ELFW(Rel));
+#endif
                 break;
-                // .rel.dyn
+                // .rel.dyn / .rela.dyn
             case DT_REL:
+            case DT_RELA:
+#if defined(__LP64__)
+                rela_dyn = (ELFW(Rela) *) (moduleBase + dyn.d_un.d_ptr);
+#else
                 rel_dyn = (ELFW(Rel) *) (moduleBase + dyn.d_un.d_ptr);
+#endif
                 break;
             case DT_RELSZ:
+            case DT_RELASZ:
                 rel_dyn_cnt = dyn.d_un.d_val / sizeof(ELFW(Rel));
                 break;
                 // .dynsym
@@ -182,23 +212,31 @@ uintptr_t getSymAddrDynamic(const char *modulePath, const char *symName) {
         LOGE("target sym not found!");
         return 0;
     }
-    //遍历 .rel.plt 和 .rel.dyn，获取偏移，计算内存地址
+    //遍历 .rel.plt / .rela.plt 和 .rel.dyn / .rela.dyn，获取偏移，计算内存地址
     for (int i = 0; i < rel_plt_cnt; i++) {
+#if defined(__LP64__)
+        ELFW(Rela) &rel = rela_plt[i];
+#else
         ELFW(Rel) &rel = rel_plt[i];
+#endif
         if (&(dynsym[ELF_R_SYM(rel.r_info)]) == target &&
             ELF_R_TYPE(rel.r_info) == ELF_R_JUMP_SLOT) {
-//            LOGE("target r_offset: %lX", rel.r_offset);
-            return moduleBase + rel.r_offset;
+//            LOGE("target r_offset: %" SCNxPTR "", rel.r_offset);
+            addrArray[addrArraySize++] = moduleBase + rel.r_offset;
         }
     }
     for (int i = 0; i < rel_dyn_cnt; i++) {
+#if defined(__LP64__)
+        ELFW(Rela) &rel = rela_dyn[i];
+#else
         ELFW(Rel) &rel = rel_dyn[i];
+#endif
         if (&(dynsym[ELF_R_SYM(rel.r_info)]) == target &&
             (ELF_R_TYPE(rel.r_info) == ELF_R_ABS
              || ELF_R_TYPE(rel.r_info) == ELF_R_GLOB_DAT)) {
-//            LOGE("target r_offset: %lX", rel.r_offset);
-            return moduleBase + rel.r_offset;
+//            LOGE("target r_offset: %" SCNxPTR "", rel.r_offset);
+            addrArray[addrArraySize++] = moduleBase + rel.r_offset;
         }
     }
-    return 0;
+    return addrArraySize;
 }
